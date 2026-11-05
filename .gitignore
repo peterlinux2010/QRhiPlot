@@ -1,0 +1,25 @@
+# 构建产物
+build/
+build-*/
+cmake-build-*/
+*.o
+*.so
+*.a
+*.dll
+*.dylib
+*.exe
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+*.moc
+
+# Qt Creator / IDE
+.qtcreator/
+.vscode/
+.idea/
+CMakeLists.txt.user*
+*.autosave
+
+# 系统文件
+.DS_Store
+Thumbs.db
