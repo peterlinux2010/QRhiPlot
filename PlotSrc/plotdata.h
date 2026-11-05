@@ -122,6 +122,8 @@ class PlotCurveData : public QObject
     Q_PROPERTY(QString name READ name WRITE setName NOTIFY nameChanged)
     Q_PROPERTY(QSharedPointer<PlotCurveAppearance> appearance READ appearance WRITE setAppearance NOTIFY appearanceChanged)
     Q_PROPERTY(int pointCount READ pointCount NOTIFY dataChanged)
+    // 保留的最大点数；超出后从最旧的数据开始批量裁剪。<=0 表示不限制。
+    Q_PROPERTY(int maxPoints READ maxPoints WRITE setMaxPoints NOTIFY maxPointsChanged)
 
 public:
     explicit PlotCurveData(const QString &name = QString(), QObject *parent = nullptr);
@@ -137,6 +139,10 @@ public:
     // 数据点操作
     int pointCount() const { return m_data.size(); }
     bool isEmpty() const { return m_data.isEmpty(); }
+
+    // 最大点数限制
+    int maxPoints() const { return m_maxPoints; }
+    void setMaxPoints(int value);
     
     // 添加数据点
     void addPoint(qreal x, qreal y);
@@ -194,11 +200,17 @@ signals:
     void pointAdded(int index);
     void pointRemoved(int index);
     void pointUpdated(int index);
+    void maxPointsChanged();
 
 private:
     QString m_name;
     QVector<QPointF> m_data;
     QSharedPointer<PlotCurveAppearance> m_appearance;
+    // 保留的最大点数，<=0 表示不限制
+    int m_maxPoints = 1000000;
+
+    // 超出上限时批量裁剪最旧的数据
+    void trimToLimit();
     
     // 缓存的数据范围
     mutable bool m_rangeValid = false;

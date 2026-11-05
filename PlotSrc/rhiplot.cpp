@@ -26,6 +26,10 @@ constexpr int kXAxisTickCount = 8;
 constexpr int kYAxisTickCount = 6;
 constexpr qreal kMinXRange = 0.001; // seconds, keeps timestamp axes above double precision traps
 constexpr qreal kMinYRange = 1e-9;
+// 坐标轴范围比较的绝对容差（秒/数值单位）。
+// 不能用 qFuzzyCompare：它是相对比较，在纪元秒级时间戳（~1.76e9）上
+// 容差会达到 1.76ms，导致 1ms 采样下相邻范围被判为相等而不更新。
+constexpr qreal kAxisRangeEpsilon = 1e-9;
 
 static qreal xTickStep(qreal xMin, qreal xMax)
 {
@@ -33,28 +37,46 @@ static qreal xTickStep(qreal xMin, qreal xMax)
     return qFuzzyIsNull(range) ? 1.0 : range / kXAxisTickCount;
 }
 
+// 计算第一个对齐到 step 的刻度值。
+// 注意：不能用 qCeil()，它内部把参数转成 32 位 int，
+// 时间戳场景下 minValue/step 可达 1e10 量级，会溢出并返回垃圾值，
+// 导致放大后 X 轴刻度全部消失。这里用 std::ceil 的浮点版本。
 static qreal firstAlignedTick(qreal minValue, qreal step)
 {
     if (qFuzzyIsNull(step))
         return minValue;
-    return qCeil(minValue / step) * step;
+    return std::ceil(minValue / step) * step;
 }
 
+// 生成 X 轴刻度值。
+// 关键：时间戳（~1.76e9）在 double 下只有约 0.24μs 分辨率，
+// 直接对绝对值做 ceil/乘法会在放大到亚毫秒时产生明显误差甚至重复值。
+// 这里改为在「相对 xMin 的偏移」域内计算，偏移量很小，精度充足。
 static QVector<qreal> xTickValues(qreal xMin, qreal xMax)
 {
     QVector<qreal> values;
-    const qreal step = xTickStep(xMin, xMax);
+    const qreal range = xMax - xMin;
+    if (!qIsFinite(range) || range <= 0.0)
+        return values;
+
+    const qreal step = range / kXAxisTickCount;
     if (!qIsFinite(step) || step <= 0.0)
         return values;
 
-    const qreal firstTick = firstAlignedTick(xMin, step);
+    // 求 xMin 相对 step 网格的余数，得到第一个刻度的偏移量。
+    // fmod 的精度受 xMin 自身分辨率限制，但后续累加都在小数值域内进行。
+    qreal rem = std::fmod(xMin, step);
+    if (rem < 0.0)
+        rem += step;
+    qreal offset = (rem > step * 1e-9) ? (step - rem) : 0.0;
+
     values.reserve(kXAxisTickCount + 3);
     for (int i = 0; i < kXAxisTickCount + 3; ++i) {
-        const qreal value = firstTick + step * i;
-        if (value > xMax + step * 0.001)
+        if (offset > range + step * 0.001)
             break;
-        if (value >= xMin - step * 0.001)
-            values.append(value);
+        // 用 xMin + offset 还原绝对时间；offset 很小，加法精度足够
+        values.append(xMin + offset);
+        offset += step;
     }
     return values;
 }
@@ -192,7 +214,12 @@ public:
         for (qreal value : xTickValues(m_xMin, m_xMax)) {
             const qreal t = (value - m_xMin) / (m_xMax - m_xMin);
             const qreal x = plotRect.left() + plotRect.width() * t;
-            painter->drawText(QRectF(x - xLabelWidth / 2.0, plotRect.bottom() + 7.0, xLabelWidth, 16.0),
+            // 标签以刻度为中心，但需夹紧到控件范围内，
+            // 否则首尾刻度的时间标签（宽 96px）会被左右边界裁掉。
+            const qreal labelX = qBound<qreal>(0.0,
+                                               x - xLabelWidth / 2.0,
+                                               qMax<qreal>(0.0, width() - xLabelWidth));
+            painter->drawText(QRectF(labelX, plotRect.bottom() + 7.0, xLabelWidth, 16.0),
                               Qt::AlignHCenter | Qt::AlignTop,
                               formatXValue(value));
         }
@@ -201,7 +228,9 @@ public:
             const qreal t = qreal(i) / kYAxisTickCount;
             const qreal y = plotRect.bottom() - plotRect.height() * t;
             const qreal value = m_yMin + (m_yMax - m_yMin) * t;
-            painter->drawText(QRectF(2.0, y - 8.0, m_leftMargin - 10.0, 16.0),
+            // 刻度标签从 x=24 开始，给左侧的 Y 轴标题（x ∈ [4, 20]）留出空间，
+            // 避免 "-50000.0" 这类宽标签压到标题上。
+            painter->drawText(QRectF(24.0, y - 8.0, qMax<qreal>(1.0, m_leftMargin - 32.0), 16.0),
                               Qt::AlignRight | Qt::AlignVCenter,
                               QString::number(value, 'f', 1));
         }
@@ -219,7 +248,8 @@ public:
 
         if (!m_yTitle.isEmpty()) {
             painter->save();
-            painter->translate(16.0, m_topMargin + plotRect.height() / 2.0);
+            // 标题中心放在 x=12，旋转后占据 x ∈ [4, 20]，与刻度标签（从 24 开始）不重叠。
+            painter->translate(12.0, m_topMargin + plotRect.height() / 2.0);
             painter->rotate(-90.0);
             painter->drawText(QRectF(-plotRect.height() / 2.0, -8.0, plotRect.height(), 16.0),
                               Qt::AlignHCenter | Qt::AlignVCenter,
@@ -286,6 +316,24 @@ private:
     QString formatXValue(qreal value) const
     {
         if (m_xAxisLabelMode == RhiPlot::TimeXAxis) {
+            // 按当前可见范围自适应精度：放大到亚毫秒级时，
+            // 固定 "HH:mm:ss.zzz" 会让所有标签显示相同时间。
+            const qreal range = m_xMax - m_xMin;
+            if (range < 0.01) {
+                // 小于 10ms：显示到微秒。
+                // 注意：不能直接 value*1e6（1.76e15 超出 double 精度），
+                // 也不能用 ms%1000 与 subMs 拼接（毫秒进位时会不一致）。
+                // 这里先取整到秒，再用相对偏移算秒内的小数部分。
+                const qint64 secs = static_cast<qint64>(std::floor(value));
+                const qreal frac = value - static_cast<qreal>(secs);
+                qint64 us = qRound64(frac * 1000000.0);
+                if (us < 0) us = 0;
+                if (us > 999999) us = 999999;
+                return QDateTime::fromSecsSinceEpoch(secs)
+                        .toLocalTime()
+                        .toString(QStringLiteral("HH:mm:ss"))
+                        + QStringLiteral(".%1").arg(us, 6, 10, QLatin1Char('0'));
+            }
             return QDateTime::fromMSecsSinceEpoch(qRound64(value * 1000.0))
                     .toLocalTime()
                     .toString(QStringLiteral("HH:mm:ss.zzz"));
@@ -380,7 +428,8 @@ static QVector<QPointF> minMaxSampleByPixelColumn(const QVector<QPointF> &points
                                                   int pixelWidth)
 {
     QVector<QPointF> sampled;
-    if (endIndex <= startIndex || pixelWidth <= 0 || qFuzzyCompare(xMin, xMax))
+    if (endIndex <= startIndex || pixelWidth <= 0
+            || qAbs(xMax - xMin) <= kAxisRangeEpsilon)
         return sampled;
 
     const int visibleCount = endIndex - startIndex;
@@ -576,7 +625,9 @@ void RhiPlot::releaseResources()
 
 void RhiPlot::wheelEvent(QWheelEvent *event)
 {
-    if (!m_zoomEnabled || qFuzzyCompare(m_xMin, m_xMax) || qFuzzyCompare(m_yMin, m_yMax)) {
+    if (!m_zoomEnabled
+            || qAbs(m_xMax - m_xMin) <= kAxisRangeEpsilon
+            || qAbs(m_yMax - m_yMin) <= kAxisRangeEpsilon) {
         event->ignore();
         return;
     }
@@ -599,8 +650,10 @@ void RhiPlot::wheelEvent(QWheelEvent *event)
             && pos.y() > plotRect.bottom() && pos.y() <= height();
     const bool onYAxis = pos.y() >= plotRect.top() && pos.y() <= plotRect.bottom()
             && pos.x() >= 0.0 && pos.x() < plotRect.left();
-    const bool zoomX = !m_followLatestX && (onXAxis || (!onYAxis && !onXAxis));
-    const bool zoomY = m_followLatestX || onYAxis || (!onYAxis && !onXAxis);
+    // 跟随模式下也允许缩放 X 轴。
+    // 在 X 轴区域滚轮只缩放 X；在 Y 轴区域只缩放 Y；绘图区内同时缩放两者。
+    const bool zoomX = onXAxis || (!onYAxis && !onXAxis);
+    const bool zoomY = onYAxis || (!onYAxis && !onXAxis);
 
     const qreal zoomFactor = wheelDelta > 0 ? 0.85 : 1.0 / 0.85;
     const qreal xNorm = plotRect.width() > 0.0 ? qBound<qreal>(0.0, (pos.x() - plotRect.left()) / plotRect.width(), 1.0) : 0.5;
@@ -608,8 +661,11 @@ void RhiPlot::wheelEvent(QWheelEvent *event)
 
     if (zoomX) {
         const qreal anchor = m_xMin + (m_xMax - m_xMin) * xNorm;
+        // 先按缩放因子算出新范围，再夹紧到最小范围。
+        // 注意：m_xMin 必须由 anchor 和夹紧后的范围反推，
+        // 否则范围被夹紧而 m_xMin 仍按 zoomFactor 漂移，导致窗口越缩越小。
         const qreal newRange = qMax<qreal>((m_xMax - m_xMin) * zoomFactor, kMinXRange);
-        m_xMin = anchor - (anchor - m_xMin) * zoomFactor;
+        m_xMin = anchor - (anchor - m_xMin) * (newRange / (m_xMax - m_xMin));
         m_xMax = m_xMin + newRange;
         emit xRangeChanged();
     }
@@ -651,8 +707,9 @@ void RhiPlot::mousePressEvent(QMouseEvent *event)
     const bool onYAxis = pos.y() >= plotRect.top() && pos.y() <= plotRect.bottom()
             && pos.x() >= 0.0 && pos.x() < plotRect.left();
 
-    m_dragX = !m_followLatestX && (onXAxis || (!onXAxis && !onYAxis));
-    m_dragY = m_followLatestX || onYAxis || (!onXAxis && !onYAxis);
+    // 跟随模式下也允许拖动 X 轴。
+    m_dragX = onXAxis || (!onXAxis && !onYAxis);
+    m_dragY = onYAxis || (!onXAxis && !onYAxis);
     m_dragging = m_dragX || m_dragY;
     m_lastMousePos = pos;
 
@@ -661,7 +718,9 @@ void RhiPlot::mousePressEvent(QMouseEvent *event)
 
 void RhiPlot::mouseMoveEvent(QMouseEvent *event)
 {
-    if (!m_dragging || qFuzzyCompare(m_xMin, m_xMax) || qFuzzyCompare(m_yMin, m_yMax)) {
+    if (!m_dragging
+            || qAbs(m_xMax - m_xMin) <= kAxisRangeEpsilon
+            || qAbs(m_yMax - m_yMin) <= kAxisRangeEpsilon) {
         event->ignore();
         return;
     }
@@ -780,7 +839,9 @@ void RhiPlot::updateHoverInfo(const QPointF &position)
 
         const QPointF &left = points[rightIndex - 1];
         const QPointF &right = points[rightIndex];
-        if (qFuzzyCompare(left.x(), right.x())) {
+        // 不能用 qFuzzyCompare：它是相对比较，在纪元秒级时间戳（~1.76e9）上
+        // 容差达 1.76ms，1ms 采样时相邻点会被误判为相等，导致悬浮窗显示 --。
+        if (qAbs(right.x() - left.x()) <= kAxisRangeEpsilon) {
             item.insert(QStringLiteral("valid"), false);
             values.append(item);
             continue;
@@ -888,7 +949,8 @@ void PlotRenderer::setPlotState(QSharedPointer<PlotCurveManager> manager,
 {
     m_vertices.clear();
 
-    if (qFuzzyCompare(xMin, xMax) || qFuzzyCompare(yMin, yMax))
+    if (qAbs(xMax - xMin) <= kAxisRangeEpsilon
+            || qAbs(yMax - yMin) <= kAxisRangeEpsilon)
         return;
 
     const qreal xRange = xMax - xMin;
@@ -1532,7 +1594,9 @@ void RhiPlot::setAutoRange(bool autoRange)
 // 设置X轴最小值
 void RhiPlot::setXMin(qreal min)
 {
-    if (!qFuzzyCompare(m_xMin, min)) {
+    // 注意：不能用 qFuzzyCompare。它是相对比较，在纪元秒级时间戳（~1.76e9）上
+    // 容差会达到 1.76ms，导致 1ms 采样下相邻范围被判为相等而不更新。
+    if (qAbs(m_xMin - min) > kAxisRangeEpsilon) {
         m_xMin = min;
         emit xRangeChanged();
         schedulePlotUpdate();
@@ -1542,7 +1606,7 @@ void RhiPlot::setXMin(qreal min)
 // 设置X轴最大值
 void RhiPlot::setXMax(qreal max)
 {
-    if (!qFuzzyCompare(m_xMax, max)) {
+    if (qAbs(m_xMax - max) > kAxisRangeEpsilon) {
         m_xMax = max;
         emit xRangeChanged();
         schedulePlotUpdate();
@@ -1552,7 +1616,7 @@ void RhiPlot::setXMax(qreal max)
 // 设置Y轴最小值
 void RhiPlot::setYMin(qreal min)
 {
-    if (!qFuzzyCompare(m_yMin, min)) {
+    if (qAbs(m_yMin - min) > kAxisRangeEpsilon) {
         m_yMin = min;
         emit yRangeChanged();
         schedulePlotUpdate();
@@ -1562,7 +1626,7 @@ void RhiPlot::setYMin(qreal min)
 // 设置Y轴最大值
 void RhiPlot::setYMax(qreal max)
 {
-    if (!qFuzzyCompare(m_yMax, max)) {
+    if (qAbs(m_yMax - max) > kAxisRangeEpsilon) {
         m_yMax = max;
         emit yRangeChanged();
         schedulePlotUpdate();
@@ -1797,19 +1861,19 @@ void RhiPlot::updateAxisRange()
         }
 
         bool changed = false;
-        if (!qFuzzyCompare(m_xMin, minX)) {
+        if (qAbs(m_xMin - minX) > kAxisRangeEpsilon) {
             m_xMin = minX;
             changed = true;
         }
-        if (!qFuzzyCompare(m_xMax, maxX)) {
+        if (qAbs(m_xMax - maxX) > kAxisRangeEpsilon) {
             m_xMax = maxX;
             changed = true;
         }
-        if (!qFuzzyCompare(m_yMin, minY)) {
+        if (qAbs(m_yMin - minY) > kAxisRangeEpsilon) {
             m_yMin = minY;
             changed = true;
         }
-        if (!qFuzzyCompare(m_yMax, maxY)) {
+        if (qAbs(m_yMax - maxY) > kAxisRangeEpsilon) {
             m_yMax = maxY;
             changed = true;
         }
@@ -1831,7 +1895,26 @@ QSharedPointer<PlotCurveData> RhiPlot::addCurve(const QString &name)
     }
 
     auto curve = m_curveManager->addCurve(name);
+    // 新建曲线立即应用当前点数上限
+    if (curve)
+        curve->setMaxPoints(m_maxPoints);
     return curve;
+}
+
+void RhiPlot::setMaxPoints(int value)
+{
+    if (value < 0) value = 0;
+    if (m_maxPoints == value) return;
+    m_maxPoints = value;
+
+    // 立即应用到所有已有曲线
+    if (m_curveManager) {
+        for (const auto &curve : m_curveManager->curves()) {
+            if (curve)
+                curve->setMaxPoints(m_maxPoints);
+        }
+    }
+    emit maxPointsChanged();
 }
 
 // 移除曲线（按索引）

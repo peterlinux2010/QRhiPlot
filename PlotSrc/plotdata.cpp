@@ -172,6 +172,7 @@ void PlotCurveData::setAppearance(QSharedPointer<PlotCurveAppearance> appearance
 void PlotCurveData::addPoint(qreal x, qreal y)
 {
     m_data.append(QPointF(x, y));
+    trimToLimit();
     m_rangeValid = false;
     emit dataChanged();
     emit pointAdded(m_data.size() - 1);
@@ -180,6 +181,7 @@ void PlotCurveData::addPoint(qreal x, qreal y)
 void PlotCurveData::addPoint(const QPointF &point)
 {
     m_data.append(point);
+    trimToLimit();
     m_rangeValid = false;
     emit dataChanged();
     emit pointAdded(m_data.size() - 1);
@@ -188,11 +190,40 @@ void PlotCurveData::addPoint(const QPointF &point)
 void PlotCurveData::addPoints(const QVector<QPointF> &points)
 {
     if (points.isEmpty()) return;
-    
+
     m_data.append(points);
+    trimToLimit();
     m_rangeValid = false;
     emit dataChanged();
     // 批量添加时不发出单个点添加信号
+}
+
+void PlotCurveData::setMaxPoints(int value)
+{
+    if (value < 0) value = 0;
+    if (m_maxPoints == value) return;
+    m_maxPoints = value;
+
+    // 立即按新上限裁剪已有数据，避免设置后仍占用旧内存
+    if (m_maxPoints > 0 && m_data.size() > m_maxPoints) {
+        m_data.remove(0, m_data.size() - m_maxPoints);
+        m_rangeValid = false;
+        emit dataChanged();
+    }
+    emit maxPointsChanged();
+}
+
+void PlotCurveData::trimToLimit()
+{
+    if (m_maxPoints <= 0 || m_data.size() <= m_maxPoints)
+        return;
+
+    // 不用 removeFirst() 逐点删：QVector 每次删除都要搬移后续元素，O(N)，
+    // 高频采样下会明显卡顿。这里一次删掉超出量的 10%（至少 1 个），
+    // 把搬移成本摊薄到每 maxPoints/10 个点才发生一次。
+    const int overflow = m_data.size() - m_maxPoints;
+    const int drop = qMax(overflow, qMax(1, m_maxPoints / 10));
+    m_data.remove(0, qMin(drop, m_data.size()));
 }
 
 void PlotCurveData::setData(const QVector<QPointF> &data)

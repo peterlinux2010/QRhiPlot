@@ -58,6 +58,8 @@ class RhiPlot : public QQuickItem
     Q_PROPERTY(QPointF hoverPosition READ hoverPosition NOTIFY hoverInfoChanged)
     Q_PROPERTY(QVariantList hoverValues READ hoverValues NOTIFY hoverInfoChanged)
     Q_PROPERTY(bool hoverPopupEnabled READ hoverPopupEnabled WRITE setHoverPopupEnabled NOTIFY hoverPopupEnabledChanged)
+    // 每条曲线保留的最大点数；<=0 表示不限制。设置后立即应用到所有曲线。
+    Q_PROPERTY(int maxPoints READ maxPoints WRITE setMaxPoints NOTIFY maxPointsChanged)
 
     QML_ELEMENT
 
@@ -147,6 +149,9 @@ public:
     bool hoverPopupEnabled() const { return m_hoverPopupEnabled; }
     void setHoverPopupEnabled(bool enabled);
 
+    int maxPoints() const { return m_maxPoints; }
+    void setMaxPoints(int value);
+
     // QML 可调用接口
     Q_INVOKABLE QSharedPointer<PlotCurveData> addCurve(const QString &name = QString());
     Q_INVOKABLE void removeCurve(int index);
@@ -208,6 +213,7 @@ signals:
     void xAxisLabelModeChanged();
     void hoverInfoChanged();
     void hoverPopupEnabledChanged();
+    void maxPointsChanged();
     // 数据变化（用于触发重绘）
     void dataChanged();
 
@@ -259,8 +265,9 @@ private:
     QColor m_gridColor = QColor(100, 100, 100, 100);
     bool m_axisVisible = true;
     QColor m_axisColor = Qt::white;
-    qreal m_plotLeftMargin = 68.0;
-    qreal m_plotRightMargin = 52.0;
+    qreal m_plotLeftMargin = 80.0;
+    // 右侧不绘制任何内容（无右轴、无标签），只留少量内边距
+    qreal m_plotRightMargin = 12.0;
     qreal m_plotTopMargin = 16.0;
     qreal m_plotBottomMargin = 52.0;
     QString m_xAxisTitle;
@@ -278,6 +285,8 @@ private:
     QPointF m_lastMousePos;
     bool m_hoverInfoValid = false;
     bool m_hoverPopupEnabled = true;
+    // 每条曲线保留的最大点数，<=0 表示不限制
+    int m_maxPoints = 1000000;
     qreal m_hoverX = 0.0;
     QPointF m_hoverPosition;
     QVariantList m_hoverValues;
