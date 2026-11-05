@@ -51,6 +51,8 @@ class PlotCurveAppearance : public QObject
     Q_PROPERTY(qreal scatterSize READ scatterSize WRITE setScatterSize NOTIFY scatterSizeChanged)
     Q_PROPERTY(bool visible READ visible WRITE setVisible NOTIFY visibleChanged)
     Q_PROPERTY(qreal opacity READ opacity WRITE setOpacity NOTIFY opacityChanged)
+    // Y 轴显示倍数：只影响绘制，不修改原始数据
+    Q_PROPERTY(qreal yScale READ yScale WRITE setYScale NOTIFY yScaleChanged)
 
 public:
     explicit PlotCurveAppearance(QObject *parent = nullptr);
@@ -86,6 +88,10 @@ public:
     // 获取和设置透明度
     qreal opacity() const { return m_opacity; }
     void setOpacity(qreal opacity);
+
+    // 获取和设置 Y 轴显示倍数（1.0 为原始比例）
+    qreal yScale() const { return m_yScale; }
+    void setYScale(qreal scale);
     
     // 转换为 QPen
     QPen toPen() const;
@@ -102,6 +108,7 @@ signals:
     void scatterSizeChanged();
     void visibleChanged();
     void opacityChanged();
+    void yScaleChanged();
     void appearanceChanged(); // 任何外观变化时发出
 
 private:
@@ -113,6 +120,7 @@ private:
     qreal m_scatterSize = 6.0;
     bool m_visible = true;
     qreal m_opacity = 1.0;
+    qreal m_yScale = 1.0;
 };
 
 // 单条曲线数据类

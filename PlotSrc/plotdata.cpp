@@ -82,6 +82,19 @@ void PlotCurveAppearance::setOpacity(qreal opacity)
     }
 }
 
+void PlotCurveAppearance::setYScale(qreal scale)
+{
+    // 倍数必须为正的有限值，否则曲线会被翻转或消失
+    if (!qIsFinite(scale) || scale <= 0.0)
+        return;
+    if (qFuzzyCompare(m_yScale, scale))
+        return;
+
+    m_yScale = scale;
+    emit yScaleChanged();
+    emit appearanceChanged();
+}
+
 QPen PlotCurveAppearance::toPen() const
 {
     if (!m_visible || m_lineStyle == LineStyle::NoLine) {

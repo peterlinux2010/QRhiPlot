@@ -281,7 +281,15 @@ setCurveLineStyle(curveIndex, style)
 setCurveLineStyle(curveName, style)
 setCurveVisible(curveIndex, visible)
 setCurveVisible(curveName, visible)
+setCurveYScale(curveIndex, scale)
+setCurveYScale(curveName, scale)
+curveYScale(curveIndex)
+curveYScale(curveName)
 ```
+
+`setCurveYScale` 设置单条曲线的 Y 轴显示倍数（1.0 为原始比例）。
+倍数只影响绘制，不修改原始数据，悬浮窗读数与 CSV 导出仍为真实值。
+典型用法是配合图例色块的滚轮事件，实现类似 jScope 的通道缩放。
 
 坐标和刷新：
 
@@ -471,7 +479,15 @@ setCurveLineStyle(curveIndex, style)
 setCurveLineStyle(curveName, style)
 setCurveVisible(curveIndex, visible)
 setCurveVisible(curveName, visible)
+setCurveYScale(curveIndex, scale)
+setCurveYScale(curveName, scale)
+curveYScale(curveIndex)
+curveYScale(curveName)
 ```
+
+`setCurveYScale` sets a per-curve Y-axis display multiplier (1.0 = original scale).
+It only affects rendering; hover readouts and CSV export keep the real values.
+A typical use is wiring it to a legend swatch wheel event for jScope-like channel scaling.
 
 Export:
 

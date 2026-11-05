@@ -1051,6 +1051,8 @@ void PlotRenderer::setPlotState(QSharedPointer<PlotCurveManager> manager,
 
         const QColor color = appearance->lineColor();
         const qreal opacity = appearance->opacity();
+        // 每条曲线独立的 Y 轴显示倍数，只影响绘制，不修改原始数据
+        const qreal yScale = appearance->yScale();
         const QVector<float> pattern = dashPattern(appearance->lineStyle());
 
         if (pattern.isEmpty()) {
@@ -1062,9 +1064,15 @@ void PlotRenderer::setPlotState(QSharedPointer<PlotCurveManager> manager,
                                                                               m_plotPixelWidth);
             m_vertices.reserve(m_vertices.size() + qMax(0, sampledPoints.size() - 1) * 2);
             for (int i = 1; i < sampledPoints.size(); ++i) {
+                QPointF source0 = sampledPoints[i - 1];
+                QPointF source1 = sampledPoints[i];
+                if (!qFuzzyCompare(yScale, 1.0)) {
+                    source0.setY(source0.y() * yScale);
+                    source1.setY(source1.y() * yScale);
+                }
                 QPointF p0;
                 QPointF p1;
-                if (clipSegmentToRect(sampledPoints[i - 1], sampledPoints[i], xMin, xMax, yMin, yMax, p0, p1))
+                if (clipSegmentToRect(source0, source1, xMin, xMax, yMin, yMax, p0, p1))
                     appendVisibleSegment(p0, p1, color, opacity);
             }
             continue;
@@ -1075,9 +1083,15 @@ void PlotRenderer::setPlotState(QSharedPointer<PlotCurveManager> manager,
         bool drawSegment = true;
 
         for (int i = startIndex + 1; i < endIndex; ++i) {
+            QPointF source0 = points[i - 1];
+            QPointF source1 = points[i];
+            if (!qFuzzyCompare(yScale, 1.0)) {
+                source0.setY(source0.y() * yScale);
+                source1.setY(source1.y() * yScale);
+            }
             QPointF p0;
             QPointF p1;
-            if (!clipSegmentToRect(points[i - 1], points[i], xMin, xMax, yMin, yMax, p0, p1))
+            if (!clipSegmentToRect(source0, source1, xMin, xMax, yMin, yMax, p0, p1))
                 continue;
 
             const QPointF delta = p1 - p0;
@@ -1840,6 +1854,33 @@ void RhiPlot::updateAxisRange()
 
     qreal minX, maxX, minY, maxY;
     if (m_curveManager->getDataRange(minX, maxX, minY, maxY)) {
+        // getDataRange 返回的是原始数据范围，Y 方向需按各曲线的显示倍数修正，
+        // 否则调过倍数的曲线会被裁掉。
+        bool hasScaledCurve = false;
+        qreal scaledMinY = 0.0;
+        qreal scaledMaxY = 0.0;
+        for (const auto &curve : m_curveManager->curves()) {
+            if (!curve || curve->isEmpty() || !curve->appearance() || !curve->appearance()->visible())
+                continue;
+            const qreal yScale = curve->appearance()->yScale();
+            if (qFuzzyCompare(yScale, 1.0))
+                continue;
+            const qreal curveMinY = curve->minY() * yScale;
+            const qreal curveMaxY = curve->maxY() * yScale;
+            if (!hasScaledCurve) {
+                scaledMinY = curveMinY;
+                scaledMaxY = curveMaxY;
+                hasScaledCurve = true;
+            } else {
+                scaledMinY = qMin(scaledMinY, curveMinY);
+                scaledMaxY = qMax(scaledMaxY, curveMaxY);
+            }
+        }
+        if (hasScaledCurve) {
+            minY = qMin(minY, scaledMinY);
+            maxY = qMax(maxY, scaledMaxY);
+        }
+
         // 添加一些边距
         qreal xRange = maxX - minX;
         qreal yRange = maxY - minY;
@@ -2182,6 +2223,38 @@ void RhiPlot::setCurveVisible(const QString &curveName, bool visible)
     if (curve && curve->appearance()) {
         curve->appearance()->setVisible(visible);
     }
+}
+
+// 设置曲线 Y 轴显示倍数（按索引）
+void RhiPlot::setCurveYScale(int curveIndex, qreal scale)
+{
+    auto curve = getCurve(curveIndex);
+    if (curve && curve->appearance()) {
+        curve->appearance()->setYScale(scale);
+    }
+}
+
+// 设置曲线 Y 轴显示倍数（按名称）
+void RhiPlot::setCurveYScale(const QString &curveName, qreal scale)
+{
+    auto curve = getCurve(curveName);
+    if (curve && curve->appearance()) {
+        curve->appearance()->setYScale(scale);
+    }
+}
+
+// 读取曲线 Y 轴显示倍数（按索引）
+qreal RhiPlot::curveYScale(int curveIndex) const
+{
+    auto curve = getCurve(curveIndex);
+    return (curve && curve->appearance()) ? curve->appearance()->yScale() : 1.0;
+}
+
+// 读取曲线 Y 轴显示倍数（按名称）
+qreal RhiPlot::curveYScale(const QString &curveName) const
+{
+    auto curve = getCurve(curveName);
+    return (curve && curve->appearance()) ? curve->appearance()->yScale() : 1.0;
 }
 
 // 自动调整坐标轴范围

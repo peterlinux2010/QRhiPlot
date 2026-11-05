@@ -182,6 +182,12 @@ public:
     Q_INVOKABLE void setCurveVisible(int curveIndex, bool visible);
     Q_INVOKABLE void setCurveVisible(const QString &curveName, bool visible);
 
+    // 曲线 Y 轴显示倍数（1.0 为原始比例，只影响绘制，不修改原始数据）
+    Q_INVOKABLE void setCurveYScale(int curveIndex, qreal scale);
+    Q_INVOKABLE void setCurveYScale(const QString &curveName, qreal scale);
+    Q_INVOKABLE qreal curveYScale(int curveIndex) const;
+    Q_INVOKABLE qreal curveYScale(const QString &curveName) const;
+
     // 自动调整坐标轴范围
     Q_INVOKABLE void autoAdjustRange();
 
